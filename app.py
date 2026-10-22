@@ -6,10 +6,8 @@ import requests
 import re
 import urllib.parse
 
-st.set_page_config(page_title="Store & Map Extractor", page_icon="📊", layout="wide")
-
-st.title("📊 Store & Google Maps Details Extractor")
-st.markdown("Upload your `.txt` or `.html` file to extract store data and enrich it with **City, District, Pincode, and Reviews** in a second Excel sheet.")
+st.set_page_config(page_title="Store & Map Extractor", layout="wide")
+st.title("Store & Google Maps Details Extractor")
 
 uploaded_file = st.file_uploader("Upload your code file (.txt, .html, etc.)", type=None)
 pasted_html = st.text_area("Or paste HTML Code here:", height=150)
@@ -17,7 +15,6 @@ pasted_html = st.text_area("Or paste HTML Code here:", height=150)
 def extract_stores(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
     extracted_list = []
-
     cards = soup.find_all("div", class_=lambda c: c and "bg-surface-muted" in c)
     if not cards:
         h3_tags = soup.find_all("h3")
@@ -28,105 +25,77 @@ def extract_stores(html_content):
     for card in cards:
         if not card:
             continue
-
         h3_tag = card.find("h3")
         name = h3_tag.get_text(strip=True) if h3_tag else ""
-
         p_tags = card.find_all("p")
         address = p_tags[0].get_text(" ", strip=True) if len(p_tags) > 0 else ""
-
-        google_map_link = ""
-        contact_number = ""
+        gmap, phone = "", ""
 
         for a_tag in card.find_all("a", href=True):
             href = a_tag["href"].strip()
             if href.startswith("tel:"):
-                contact_number = href.replace("tel:", "").strip()
+                phone = href.replace("tel:", "").strip()
             elif "maps" in href or "goo.gl" in href or "Directions" in a_tag.get_text():
-                google_map_link = href
+                gmap = href
 
         if name or address:
-            extracted_list.append({
-                "Name": name,
-                "Address": address,
-                "Google Map Link": google_map_link,
-                "Contact Number": contact_number
-            })
-
+            row = dict(Name=name, Address=address, Google_Map_Link=gmap, Contact_Number=phone)
+            extracted_list.append(row)
     return extracted_list
 
-
 def fetch_map_details(map_url, fallback_address=""):
-    city = ""
-    district = ""
-    pincode = ""
-    reviews = "N/A"
-    resolved_url = map_url
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-
+    city, district, pincode, reviews = "", "", "", "N/A"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     lat, lon = None, None
 
-    # 1. Follow Google Maps short link & inspect page metadata
     if map_url and map_url.startswith("http"):
         try:
             resp = requests.get(map_url, headers=headers, timeout=10, allow_redirects=True)
-            resolved_url = resp.url
-            page_text = resp.text
+            r_url = resp.url
+            text = resp.text
 
-            # Try extracting coordinates from URL: @lat,lon or !3dlat!4dlon
-            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', resolved_url)
-            if not coord_match:
-                coord_match = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', resolved_url)
-            if coord_match:
-                lat, lon = coord_match.group(1), coord_match.group(2)
+            c_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', r_url) or re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', r_url)
+            if c_match:
+                lat, lon = c_match.group(1), c_match.group(2)
 
-            # Try extracting Reviews / Rating from meta tags or page text
-            soup_map = BeautifulSoup(page_text, "html.parser")
-            meta_desc = soup_map.find("meta", attrs={"name": "description"}) or soup_map.find("meta", attrs={"property": "og:description"})
-            if meta_desc and meta_desc.get("content"):
-                desc_content = meta_desc["content"]
-                rating_match = re.search(r'(\d\.\d)\s*★.*?(\(\d+[\d,]*\)|\d+[\d,]*\s*reviews?)', desc_content, re.I)
-                if rating_match:
-                    reviews = rating_match.group(0)
-                elif "★" in desc_content:
-                    reviews = desc_content
+            soup_m = BeautifulSoup(text, "html.parser")
+            meta = soup_m.find("meta", attrs={"name": "description"}) or soup_m.find("meta", attrs={"property": "og:description"})
+            if meta and meta.get("content"):
+                desc = meta["content"]
+                r_match = re.search(r'(\d\.\d)\s*★.*?(\(\d+[\d,]*\)|\d+[\d,]*\s*reviews?)', desc, re.I)
+                if r_match:
+                    reviews = r_match.group(0)
+                elif "★" in desc:
+                    reviews = desc
 
             if reviews == "N/A":
-                rev_regex = re.search(r'(\d\.\d)\s*\(\s*(\d+[\d,]*)\s*\)', page_text)
-                if rev_regex:
-                    reviews = f"{rev_regex.group(1)} ⭐ ({rev_regex.group(2)} reviews)"
+                rev_reg = re.search(r'(\d\.\d)\s*\(\s*(\d+[\d,]*)\s*\)', text)
+                if rev_reg:
+                    reviews = f"{rev_reg.group(1)} Stars ({rev_reg.group(2)} reviews)"
 
-            # Try finding 6-digit Indian Pincode in URL or meta description
-            unquoted_url = urllib.parse.unquote(resolved_url)
-            pin_match = re.search(r'\b([1-8]\d{5})\b', unquoted_url)
-            if pin_match:
-                pincode = pin_match.group(1)
+            p_match = re.search(r'\b([1-8]\d{5})\b', urllib.parse.unquote(r_url))
+            if p_match:
+                pincode = p_match.group(1)
         except Exception:
             pass
 
-    # 2. If coordinates were found in the Google Map link, get exact City, District, Pincode
     if lat and lon:
         try:
-            nom_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
-            nom_resp = requests.get(nom_url, headers={"User-Agent": "StoreExtractorStreamlitApp/1.0"}, timeout=10)
-            if nom_resp.status_code == 200:
-                addr_data = nom_resp.json().get("address", {})
-                city = addr_data.get("city") or addr_data.get("town") or addr_data.get("village") or addr_data.get("suburb") or ""
-                district = addr_data.get("state_district") or addr_data.get("county") or ""
+            n_url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+            n_resp = requests.get(n_url, headers={"User-Agent": "StoreApp/1.0"}, timeout=10)
+            if n_resp.status_code == 200:
+                addr = n_resp.json().get("address", {})
+                city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("suburb") or ""
+                district = addr.get("state_district") or addr.get("county") or ""
                 if not pincode:
-                    pincode = addr_data.get("postcode", "")
+                    pincode = addr.get("postcode", "")
         except Exception:
             pass
 
-    # 3. Fallback: Parse City/District/Pincode from the text address if still empty
     if not pincode and fallback_address:
-        pin_fallback = re.search(r'\b([1-8]\d{5})\b', fallback_address)
-        if pin_fallback:
-            pincode = pin_fallback.group(1)
+        pf = re.search(r'\b([1-8]\d{5})\b', fallback_address)
+        if pf:
+            pincode = pf.group(1)
 
     if (not city or not district) and fallback_address:
         parts = [p.strip() for p in fallback_address.split(",") if p.strip()]
@@ -137,40 +106,36 @@ def fetch_map_details(map_url, fallback_address=""):
         elif not city:
             city = district
 
-    return {
-        "City": city,
-        "District": district,
-        "Pincode": pincode,
-        "Reviews": reviews,
-        "Full Map URL": resolved_url
-    }
+    return dict(City=city, District=district, Pincode=pincode, Reviews=reviews)
 
-
-html_data = ""
-if uploaded_file is not None:
-    html_data = uploaded_file.read().decode("utf-8", errors="ignore")
-elif pasted_html.strip():
-    html_data = pasted_html
+html_data = uploaded_file.read().decode("utf-8", errors="ignore") if uploaded_file else pasted_html.strip()
 
 if html_data:
     base_results = extract_stores(html_data)
-
     if base_results:
         df_basic = pd.DataFrame(base_results)
-        st.success(f"Extracted {len(df_basic)} store(s) from HTML!")
         st.subheader("Sheet 1: Store Details")
         st.dataframe(df_basic, use_container_width=True)
 
-        # Button to check Google Map links and build Sheet 2
-        if st.button("🌐 Check Google Map Links (Extract City, District, Pincode & Reviews)", type="primary"):
+        if st.button("Check Google Map Links (Extract City, District, Pincode & Reviews)", type="primary"):
             enriched_rows = []
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            bar = st.progress(0)
+            for i, r in enumerate(base_results):
+                info = fetch_map_details(r["Google_Map_Link"], r["Address"])
+                combined = dict(r, **info)
+                enriched_rows.append(combined)
+                bar.progress((i + 1) / len(base_results))
+            st.session_state["df_enriched"] = pd.DataFrame(enriched_rows)
 
-            for i, row in enumerate(base_results):
-                status_text.text(f"Checking link {i+1} of {len(base_results)}: {row['Name']}...")
-                map_info = fetch_map_details(row["Google Map Link"], row["Address"])
-                
-                enriched_rows.append({
-                    "Name": row["Name"],
-                    "Address":
+        if "df_enriched" in st.session_state:
+            st.subheader("Sheet 2: Map Details")
+            st.dataframe(st.session_state["df_enriched"], use_container_width=True)
+
+        out = BytesIO()
+        with pd.ExcelWriter(out, engine="openpyxl") as writer:
+            df_basic.to_excel(writer, index=False, sheet_name="Store Details")
+            if "df_enriched" in st.session_state:
+                st.session_state["df_enriched"].to_excel(writer, index=False, sheet_name="Map Details")
+
+        st.download_button("Download Excel (.xlsx)", data=out.getvalue(), file_name="stores.xlsx")
+# END OF FILE
